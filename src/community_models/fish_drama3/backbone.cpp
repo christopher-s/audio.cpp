@@ -203,6 +203,8 @@ struct Drama3BackboneWeights {
     std::shared_ptr<core::ExecutionContext> cpu_execution;
     std::shared_ptr<core::BackendWeightStore> store;
     std::shared_ptr<core::BackendWeightStore> cpu_store;
+    // overmind: repack extra-buffer store for CPU expert banks (ggml CPU_REPACK kernels)
+    std::shared_ptr<core::BackendWeightStore> repack_store;
     std::unique_ptr<core::DiskExpertWeightStore> disk_store;
     core::TensorValue token_embedding;
     std::vector<Drama3BackboneLayerWeights> layers;
@@ -308,6 +310,31 @@ std::shared_ptr<Drama3BackboneWeights> load_qwen35_weights(
             "drama3_backbone.host_experts", weight_context_bytes);
     }
     const std::string & root = c.weight_prefix;
+    // overmind: on the CPU backend, when cpu_repack is requested, route the
+    // routed-expert banks into a BackendWeightStore bound to the first ggml
+    // CPU extra buffer type that accepts them (CPU_REPACK interleaved layouts,
+    // as llama.cpp/lfm2_audio place their weights). Falls back to the plain
+    // store when no extra buffer type takes the type/shape or off the CPU.
+    if (c.cpu_repack && execution.backend_type() == core::BackendType::Cpu && !c.disk_experts) {
+        const auto extra = core::cpu_extra_buffer_types(execution.backend());
+        for (auto * buffer_type : extra) {
+            // Probe with the 2-D matmul shape ggml checks (rows x cols of one expert).
+            if (core::buffer_type_supports_matmul_weight(
+                    execution.backend(), buffer_type, GGML_TYPE_Q4_K,
+                    c.intermediate_size, c.hidden_size)) {
+                weights->repack_store = std::make_shared<core::BackendWeightStore>(
+                    execution.backend(),
+                    execution.backend_type(),
+                    "drama3_backbone.repack_experts",
+                    weight_context_bytes,
+                    buffer_type);
+                break;
+            }
+        }
+        if (!weights->repack_store) {
+            std::fprintf(stderr, "[fish_drama3] cpu_repack requested but no CPU extra buffer type accepts Q4_K expert banks; using the plain store\n");
+        }
+    }
     if (c.disk_experts) {
         if (storage_type != assets::TensorStorageType::Native)
             throw std::runtime_error("Drama 3 disk experts require native GGUF weight types");
@@ -356,9 +383,11 @@ std::shared_ptr<Drama3BackboneWeights> load_qwen35_weights(
             out.expert_down = out.disk_store->tensor(out.disk_group, 2);
         } else {
             auto & expert_store = weights->cpu_store && layer < c.cpu_expert_layers ? *weights->cpu_store : *weights->store;
-            out.expert_gate = expert_store.load_tensor(source, prefix + ".mlp.experts.gate_proj.weight", storage_type, {layer_experts, c.intermediate_size, c.hidden_size});
-            out.expert_up = expert_store.load_tensor(source, prefix + ".mlp.experts.up_proj.weight", storage_type, {layer_experts, c.intermediate_size, c.hidden_size});
-            out.expert_down = expert_store.load_tensor(source, prefix + ".mlp.experts.down_proj.weight", storage_type, {layer_experts, c.hidden_size, c.intermediate_size});
+            // overmind: repack store takes precedence on the CPU backend.
+            auto & load_store = weights->repack_store ? *weights->repack_store : expert_store;
+            out.expert_gate = load_store.load_tensor(source, prefix + ".mlp.experts.gate_proj.weight", storage_type, {layer_experts, c.intermediate_size, c.hidden_size});
+            out.expert_up = load_store.load_tensor(source, prefix + ".mlp.experts.up_proj.weight", storage_type, {layer_experts, c.intermediate_size, c.hidden_size});
+            out.expert_down = load_store.load_tensor(source, prefix + ".mlp.experts.down_proj.weight", storage_type, {layer_experts, c.hidden_size, c.intermediate_size});
         }
         weights->layers.push_back(std::move(out));
     }
@@ -379,6 +408,7 @@ std::shared_ptr<Drama3BackboneWeights> load_qwen35_weights(
     }
     weights->store->upload();
     if (weights->cpu_store) weights->cpu_store->upload();
+    if (weights->repack_store) weights->repack_store->upload();
     return weights;
 }
 

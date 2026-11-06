@@ -52,6 +52,9 @@ struct Drama3BackboneDecoderConfig {
     int64_t disk_expert_read_threads = 1;
     size_t prefill_cache_bytes = 256u * 1024u * 1024u;
     bool profile_prefill_cache = false;
+    // overmind: load routed expert banks into ggml CPU extra buffer types
+    // (CPU_REPACK interleaved kernels) on the CPU backend.
+    bool cpu_repack = false;
 };
 
 struct Drama3BackboneDecoderForwardResult {

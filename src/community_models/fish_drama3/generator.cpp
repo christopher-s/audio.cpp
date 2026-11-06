@@ -130,6 +130,7 @@ Drama3Generator::Drama3Generator(std::shared_ptr<const Drama3Assets> assets,
     debug::trace_log_scalar("fish_drama3.fused_moe", backbone_config.fused_moe);
     debug::trace_log_scalar("fish_drama3.kv_cache_type", std::string_view(backbone_config.kv_cache_type == GGML_TYPE_F16 ? "f16" : "f32"));
     debug::trace_log_scalar("fish_drama3.kv_cache_alignment", backbone_config.kv_cache_alignment);
+    debug::trace_log_scalar("fish_drama3.cpu_repack", backbone_config.cpu_repack);
     backbone_config.cpu_expert_layers = runtime::parse_i64_option(options.options, {"fish_drama3.cpu_expert_layers"}).value_or(4);
     if (const auto value = runtime::find_option(options.options, {"fish_drama3.disk_experts"}))
         backbone_config.disk_experts = runtime::parse_bool_option(*value, "fish_drama3.disk_experts");
@@ -143,6 +144,9 @@ Drama3Generator::Drama3Generator(std::shared_ptr<const Drama3Assets> assets,
         options.options, {"fish_drama3.disk_expert_read_threads"}, 1);
     if (backbone_config.disk_expert_read_threads > 64)
         throw std::runtime_error("Drama 3 disk_expert_read_threads must be between 1 and 64");
+    // overmind: opt-in CPU expert repack (ggml CPU_REPACK interleaved kernels).
+    if (const auto value = runtime::find_option(options.options, {"fish_drama3.cpu_repack"}))
+        backbone_config.cpu_repack = runtime::parse_bool_option(*value, "fish_drama3.cpu_repack");
     const auto backbone_prefill_cache_mb = runtime::parse_i64_option(options.options, {"fish_drama3.backbone_prefill_cache_mb"}).value_or(256);
     if (backbone_prefill_cache_mb < 0 || backbone_prefill_cache_mb > 4096) throw std::runtime_error("Drama 3 backbone_prefill_cache_mb must be between 0 and 4096");
     backbone_config.prefill_cache_bytes = static_cast<size_t>(backbone_prefill_cache_mb) * 1024u * 1024u;
